@@ -1,0 +1,342 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Infrastructure as a service for cloud kitchen services",
+    "Parameters": {
+      "ACCESSKEYID": {
+          "Type": "String",
+          "Description": "The value of the ACCESS_KEY_ID environment variable"
+      },
+      "SECRETACCESSKEY": {
+          "Type": "String",
+          "Description": "The value of the SECRET_ACCESS_KEY environment variable"
+      },
+      "SESSIONTOKEN": {
+          "Type": "String",
+          "Description": "The value of the SESSION_TOKEN environment variable"
+      }
+    },
+    "Resources": {
+      "CloudKitchenImagesS3Bucket": {
+        "Type": "AWS::S3::Bucket",
+        "Properties": {
+          "BucketName": "scg-cloudkitchenbucket-test",
+          "OwnershipControls": {
+            "Rules": [
+                {
+                "ObjectOwnership": "BucketOwnerPreferred"
+                }
+            ]
+          },
+          "PublicAccessBlockConfiguration": {
+            "BlockPublicAcls" : false,
+            "BlockPublicPolicy" : false,
+            "IgnorePublicAcls" : false,
+            "RestrictPublicBuckets" : false
+          },
+          "BucketEncryption": {
+            "ServerSideEncryptionConfiguration": [
+                {
+                    "BucketKeyEnabled": true,
+                    "ServerSideEncryptionByDefault": {
+                        "SSEAlgorithm": "AES256"
+                    }
+                }
+            ]
+          }
+        }
+      },
+      "CloudKitchenImagesS3BucketPolicy" : {
+        "Type" : "AWS::S3::BucketPolicy",
+        "Properties": {
+          "Bucket" : {"Ref" : "CloudKitchenImagesS3Bucket"},
+          "PolicyDocument": 
+          {
+            "Version": "2008-10-17",
+            "Id": "PolicyForCloudFrontS3",
+            "Statement": [
+                {
+                    "Sid": "1",
+                    "Effect": "Allow",
+                    "Principal": {
+                      "CanonicalUser": {
+                        "Fn::GetAtt": ["CloudFrontOAI", "S3CanonicalUserId"]
+                      }
+                    },
+                    "Action": "s3:GetObject",
+                    "Resource": "arn:aws:s3:::scg-cloudkitchenbucket-test/*"
+                }
+            ]
+        }
+        }
+      },
+      "CloudFrontOAI": {
+        "Type": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+        "Properties": {
+          "CloudFrontOriginAccessIdentityConfig": {
+            "Comment": "Access-Identity-CloudKitchen-CloudFront"
+          }
+        }
+      },
+      "CloudKitchenS3BucketDistribution": {
+        "Type" : "AWS::CloudFront::Distribution",
+        "Properties": {
+          "DistributionConfig": {
+            "Enabled": true,
+            "Origins": [
+              {
+                "DomainName": "scg-cloudkitchenbucket-test.s3.us-east-1.amazonaws.com",
+                "Id" : "scg-cloudkitchenbucket-test-id",
+                "OriginShield": {
+                  "Enabled": false
+                },
+                "S3OriginConfig": {
+                  "OriginAccessIdentity": {
+                    "Fn::Join": [
+                      "",
+                      ["origin-access-identity/cloudfront/", {"Ref": "CloudFrontOAI"}]
+                    ]
+                  }
+                }
+              }
+            ], 
+            "DefaultCacheBehavior": {
+              "TargetOriginId" : "scg-cloudkitchenbucket-test-id",
+              "ForwardedValues": {
+                "QueryString": "false",
+                "Cookies": {
+                  "Forward": "none"
+                }
+              },
+              "Compress": true,
+              "ViewerProtocolPolicy": "redirect-to-https",
+              "AllowedMethods": [
+                "GET",
+                "HEAD"
+              ]
+            },
+            "PriceClass": "PriceClass_All",
+            "HttpVersion": "http2",
+            "IPV6Enabled": true
+          }
+        }
+      },
+      "CloudKitchenMenuItemsTable": {
+        "Type": "AWS::DynamoDB::Table",
+        "Properties": {
+            "TableName" : "menu_items_test",
+            "AttributeDefinitions": [
+                {
+                "AttributeName": "id",
+                "AttributeType": "S"
+                }
+            ],
+            "KeySchema": [
+                {
+                "AttributeName" : "id",
+                "KeyType" : "HASH"
+                }
+            ],
+            "ProvisionedThroughput": {
+                "ReadCapacityUnits": 5,
+                "WriteCapacityUnits": 5
+            },
+            "StreamSpecification": {
+                "StreamViewType": "NEW_AND_OLD_IMAGES"
+            }
+        }
+      },
+      "CloudKitchenMenuItemsTableStreamTrigger": {
+        "Type" : "AWS::Lambda::EventSourceMapping",
+        "Properties": {
+            "EventSourceArn": {
+                "Fn::GetAtt": ["CloudKitchenMenuItemsTable", "StreamArn"]
+            },
+            "FunctionName": {
+                "Fn::GetAtt": ["MenuItemsSNSLambda", "Arn"]
+            },
+            "BatchSize": 1,
+            "Enabled": true,
+            "StartingPosition": "LATEST"
+        }
+      },
+      "MenuItemSNS": {
+        "Type" : "AWS::SNS::Topic",
+        "Properties": {
+            "FifoTopic":false,
+            "TopicName": "menuItemTest",
+            "Subscription": [
+                {
+                    "Endpoint": "shivangkumargandhi19@gmail.com",
+                    "Protocol": "email"
+                }
+            ]
+        }
+      },
+      "MenuItemsSNSLambda": {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+            "FunctionName": "newMenuItemSNSTest",
+            "Runtime": "nodejs16.x",
+            "Architectures": [
+                "x86_64"
+            ],
+            "Role": "arn:aws:iam::251244722880:role/LabRole",
+            "Code": {
+                "ZipFile": "const AWS = require('aws-sdk');\r\nconst sns = new AWS.SNS();\r\nexports.handler = async (event) => {\r\nlet message = ''\r\nlet subject = ''\r\nif(event.Records[0].eventName == 'INSERT') {\r\nmessage = JSON.stringify(event.Records[0].dynamodb.NewImage)\r\nsubject = 'New Menu Item Added'\r\n}\r\nelse if(event.Records[0].eventName == 'REMOVE') {\r\nmessage = JSON.stringify(event.Records[0].dynamodb.OldImage)\r\nsubject = 'Menu Item Deleted'\r\n}\r\nconst params = {\r\nMessage: message,\r\nSubject: subject,\r\nTopicArn: 'arn:aws:sns:us-east-1:251244722880:menuItemTest'\r\n}\r\nawait sns.publish(params).promise();\r\n};"
+            },
+            "Handler": "index.handler"
+        }
+      },
+      "CloudKitchenOrdersTable": {
+        "Type": "AWS::DynamoDB::Table",
+        "Properties": {
+            "TableName" : "orders_test",
+            "AttributeDefinitions": [
+                {
+                "AttributeName": "id",
+                "AttributeType": "S"
+                }
+            ],
+            "KeySchema": [
+                {
+                "AttributeName" : "id",
+                "KeyType" : "HASH"
+                }
+            ],
+            "ProvisionedThroughput": {
+                "ReadCapacityUnits": 5,
+                "WriteCapacityUnits": 5
+            }
+        }
+      },
+      "CloudKitchenSecretsManager": {
+        "Type": "AWS::SecretsManager::Secret",
+        "Properties": {
+            "Description" : "Secrets Manager for cloud-kitchen",
+            "Name" : "cloud-kitchen-secret-test",
+            "SecretString" : {
+              "Fn::Join": ["", ["{\"adminEmail\":\"shivangkumargandhi19@gmail.com\",\"adminPassword\":\"shivangAWSAssignment\",\"BUCKET\":\"scg-cloudkitchenbucket-test\",\"MENUITEMSTABLENAME\":\"menu_items_test\",\"ORDERSTABLE\":\"orders_test\",\"S3CDNURL\":\"https://", { "Fn::GetAtt": [ "CloudKitchenS3BucketDistribution", "DomainName" ] }, "/\"}"]]
+            }
+        }
+      },
+      "CloudKitchenServerEC2": {
+        "Type" : "AWS::EC2::Instance",
+        "Properties": {
+            "ImageId": "ami-04581fbf744a7d11f",
+            "InstanceType": "t2.micro",
+            "KeyName": "cloudkitchenserver",
+            "SecurityGroupIds": [
+                { "Ref": "CloudKitchenServerSecurityGroup" }
+            ],
+            "UserData": {
+                "Fn::Base64": {
+                    "Fn::Join": [
+                        "",
+                    [
+                        "#!/bin/bash\n",
+                        "sudo yum install -y gcc-c++ make\n",
+                        "curl -sL https://rpm.nodesource.com/setup_16.x | sudo -E bash -\n",
+                        "sudo yum install -y nodejs\n",
+                        "sudo yum install -y git\n",
+                        "cd /home/ec2-user\n",
+                        "git clone https://github.com/ShivangGandhi/cloudkitchenserver.git\n",
+                        "cd cloudkitchenserver\n",
+                        "npm i\n",
+                        "ACCESS_KEY_ID=",
+                        { "Ref" : "ACCESSKEYID" },
+                        " SECRET_ACCESS_KEY=",
+                        { "Ref" : "SECRETACCESSKEY" },
+                        " SESSION_TOKEN=",
+                        { "Ref" : "SESSIONTOKEN" },
+                        " REGION=",
+                        "us-east-1 ",
+                        "SECRETSMANAGERID=",
+                        "cloud-kitchen-secret-test ",
+                        "npm start\n"
+                    ]
+                ]
+                }
+            }
+        },
+        "DependsOn": [
+          "CloudKitchenSecretsManager"
+        ]
+      },
+      "CloudKitchenServerSecurityGroup": {
+          "Type" : "AWS::EC2::SecurityGroup",
+          "Properties" : {
+              "GroupDescription": "launch-wizard-9 created 2023-04-03T12:51:01.026Z",
+              "SecurityGroupIngress": [
+                  {
+                  "CidrIp": "0.0.0.0/0",
+                  "FromPort": 22,
+                  "ToPort": 22,
+                  "IpProtocol": "tcp"
+              }, 
+              {
+                  "CidrIp": "0.0.0.0/0",
+                  "FromPort": 8080,
+                  "ToPort": 8080,
+                  "IpProtocol": "tcp"
+              }
+          ]
+          }
+      },
+      "CloudKitchenClientEC2": {
+          "Type" : "AWS::EC2::Instance",
+          "Properties": {
+              "ImageId": "ami-04581fbf744a7d11f",
+              "InstanceType": "t2.micro",
+              "KeyName": "cloudkitchenclient",
+              "SecurityGroupIds": [
+                  { "Ref": "CloudKitchenClientSecurityGroup" }
+              ],
+              "UserData": {
+                  "Fn::Base64": {
+                      "Fn::Join": [
+                          "",
+                      [
+                          "#!/bin/bash\n",
+                          "sudo yum install -y gcc-c++ make\n",
+                          "curl -sL https://rpm.nodesource.com/setup_16.x | sudo -E bash -\n",
+                          "sudo yum install -y nodejs\n",
+                          "sudo yum install -y git\n",
+                          "cd /home/ec2-user\n",
+                          "git clone https://github.com/ShivangGandhi/cloudkitchenclient.git\n",
+                          "cd cloudkitchenclient\n",
+                          "npm i\n",
+                          "REACT_APP_URL=http://",
+                          {"Fn::Join": ["", [{ "Fn::GetAtt": [ "CloudKitchenServerEC2", "PublicIp" ] }]]},
+                          ":8080",
+                          " npm start\n"
+                      ]
+                  ]
+                  }
+              }
+          },
+          "DependsOn": [
+            "CloudKitchenServerEC2"
+          ]
+      },
+      "CloudKitchenClientSecurityGroup": {
+          "Type" : "AWS::EC2::SecurityGroup",
+          "Properties" : {
+              "GroupDescription": "launch-wizard-10 created 2023-04-03T19:42:46.083Z",
+              "SecurityGroupIngress": [
+                  {
+                  "CidrIp": "0.0.0.0/0",
+                  "FromPort": 22,
+                  "ToPort": 22,
+                  "IpProtocol": "tcp"
+              }, 
+              {
+                  "CidrIp": "0.0.0.0/0",
+                  "FromPort": 3000,
+                  "ToPort": 3000,
+                  "IpProtocol": "tcp"
+              }
+          ]
+          }
+      }
+    }
+  }
